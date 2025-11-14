@@ -13,33 +13,23 @@ const {
   DisconnectReason
 } = baileys;
 
-const logger = {
-  info: (...args) => console.log('[INFO]', ...args),
-  warn: (...args) => console.warn('[WARN]', ...args),
-  error: (...args) => console.error('[ERROR]', ...args),
-  debug: (...args) => console.debug('[DEBUG]', ...args)
-};
+const defaultOwnerNumber = '6285163207556';
+const rawOwner = process.env.OWNER_NUMBER || defaultOwnerNumber;
+const cleanedOwner = rawOwner.replace(/\D/g, '');
+const ownerNumber = cleanedOwner || defaultOwnerNumber;
+const ownerJid = `${ownerNumber}@s.whatsapp.net`;
 
-function normalizeOwnerNumber(rawNumber) {
-  const digits = (rawNumber || '').replace(/\D/g, '');
-  if (!digits) {
-    return null;
-  }
-  return `${digits}@s.whatsapp.net`;
+function isFromOwner(msg) {
+  const from = msg.key.remoteJid;
+  const sender = msg.key.participant || from;
+
+  if (msg.key.fromMe) return true;
+
+  return sender === ownerJid || from === ownerJid;
 }
 
-const ownerNumberRaw = process.env.OWNER_NUMBER;
-const ownerJid = normalizeOwnerNumber(ownerNumberRaw);
-
-if (!ownerJid) {
-  logger.warn('OWNER_NUMBER environment variable is missing or invalid. The bot will ignore all messages.');
-} else {
-  logger.info('Owner JID loaded', { ownerJid });
-}
-
-async function createStickerFromImage(imageBuffer) {
-  logger.debug('Creating sticker from image buffer');
-  return sharp(imageBuffer)
+async function createStickerFromImage(buffer) {
+  return sharp(buffer)
     .resize(512, 512, {
       fit: 'inside',
       background: { r: 0, g: 0, b: 0, alpha: 0 }
@@ -48,93 +38,53 @@ async function createStickerFromImage(imageBuffer) {
     .toBuffer();
 }
 
-async function handleImageMessage(sock, message) {
-  try {
-    const remoteJid = message.key.remoteJid;
-    logger.info('Downloading image message', { remoteJid });
-
-    const mediaBuffer = await downloadMediaMessage(
-      message,
-      'buffer',
-      {},
-      { reuploadRequest: sock }
-    );
-
-    const stickerBuffer = await createStickerFromImage(mediaBuffer);
-
-    await sock.sendMessage(
-      remoteJid,
-      { sticker: stickerBuffer },
-      { quoted: message }
-    );
-
-    logger.info('Sticker sent successfully', { remoteJid });
-  } catch (error) {
-    logger.error('Failed to process image message', error);
-  }
-}
-
-async function handleVideoMessage(sock, message) {
-  const remoteJid = message.key.remoteJid;
-  logger.info('Video message received, informing user', { remoteJid });
-  try {
-    await sock.sendMessage(
-      remoteJid,
-      { text: 'Untuk sekarang aku cuma bisa bikin stiker dari foto ya 😊' },
-      { quoted: message }
-    );
-  } catch (error) {
-    logger.error('Failed to reply to video message', error);
-  }
-}
-
-function logNonMediaMessage(message) {
-  const remoteJid = message.key.remoteJid;
-  const messageTypes = Object.keys(message.message || {});
-  logger.info('Non-media message received', { remoteJid, messageTypes });
-}
-
 async function startBot() {
   try {
-    logger.info('Starting WhatsApp sticker bot');
+    console.log('[INFO] Starting WhatsApp sticker bot');
+    console.log('[INFO] Owner JID', { ownerJid });
 
     const { state, saveCreds } = await useMultiFileAuthState('auth');
     const { version, isLatest } = await fetchLatestBaileysVersion();
-
-    logger.info('Using WhatsApp Web version', { version, isLatest });
+    console.log('[INFO] Using WhatsApp Web version', { version, isLatest });
 
     const sock = makeWASocket({
-      version,
       auth: state,
-      printQRInTerminal: false
+      version,
+      printQRInTerminal: true
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update;
+      const { connection, lastDisconnect } = update;
 
-      if (qr) {
-        logger.info('QR code received, please scan with WhatsApp');
-        qrcode.generate(qr, { small: true });
+      if (update.qr) {
+        console.log('[INFO] QR code received, scan it using WhatsApp');
+        qrcode.generate(update.qr, { small: true });
       }
 
-      if (connection === 'open') {
-        logger.info('Connection to WhatsApp opened');
+      if (connection) {
+        console.log('[INFO] Connection state changed', { connection });
       }
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-        logger.warn('Connection to WhatsApp closed', { statusCode, shouldReconnect });
+        if (statusCode === 401) {
+          console.error('[ERROR] Logged out from WhatsApp. Delete the auth folder and restart to log in again.');
+        } else {
+          console.warn('[WARN] Connection closed', { statusCode, shouldReconnect });
+        }
 
         if (shouldReconnect) {
-          logger.info('Reconnecting to WhatsApp...');
+          console.log('[INFO] Attempting to reconnect...');
           setTimeout(startBot, 2000);
-        } else {
-          logger.error('Logged out from WhatsApp. Delete the auth folder and restart to log in again.');
         }
+      }
+
+      if (connection === 'open') {
+        console.log('[INFO] Connection to WhatsApp opened');
       }
     });
 
@@ -143,45 +93,65 @@ async function startBot() {
         return;
       }
 
-      for (const message of messages) {
-        const remoteJid = message.key.remoteJid;
-        const senderJid = message.key.participant || remoteJid;
-
-        if (!message.message) {
-          logger.debug('Skipping empty message payload', { remoteJid });
-          continue;
-        }
-
-        if (message.key.fromMe) {
-          logger.debug('Skipping message sent by the bot itself');
-          continue;
-        }
-
-        if (!ownerJid || senderJid !== ownerJid) {
-          logger.info('Ignoring message from non-owner', { senderJid, remoteJid });
-          continue;
-        }
-
-        if (message.message.imageMessage) {
-          await handleImageMessage(sock, message);
-          continue;
-        }
-
-        if (message.message.videoMessage) {
-          await handleVideoMessage(sock, message);
-          continue;
-        }
-
-        logNonMediaMessage(message);
+      const [msg] = messages;
+      if (!msg || !msg.message) {
+        return;
       }
+
+      if (!isFromOwner(msg)) {
+        console.log('[INFO] Ignoring message from non-owner', {
+          senderJid: msg.key.participant || msg.key.remoteJid,
+          remoteJid: msg.key.remoteJid
+        });
+        return;
+      }
+
+      if (msg.message.imageMessage) {
+        try {
+          console.log('[INFO] Processing image message for sticker');
+          const mediaBuffer = await downloadMediaMessage(
+            msg,
+            'buffer',
+            {},
+            { reuploadRequest: sock }
+          );
+          const stickerBuffer = await createStickerFromImage(mediaBuffer);
+          await sock.sendMessage(
+            msg.key.remoteJid,
+            { sticker: stickerBuffer },
+            { quoted: msg }
+          );
+          console.log('[INFO] Sticker sent successfully');
+        } catch (error) {
+          console.error('[ERROR] Failed to process image message', error);
+        }
+        return;
+      }
+
+      if (msg.message.videoMessage) {
+        try {
+          await sock.sendMessage(
+            msg.key.remoteJid,
+            { text: 'Untuk sekarang aku cuma bisa bikin stiker dari foto ya 😊' },
+            { quoted: msg }
+          );
+          console.log('[INFO] Replied to video message with photo-only notice');
+        } catch (error) {
+          console.error('[ERROR] Failed to reply to video message', error);
+        }
+        return;
+      }
+
+      const messageTypes = Object.keys(msg.message);
+      console.log('[INFO] Non-media message from owner', { messageTypes });
     });
   } catch (error) {
-    logger.error('Error while starting the bot', error);
+    console.error('[ERROR] Fatal error while starting bot', error);
     setTimeout(startBot, 5000);
   }
 }
 
 startBot().catch((error) => {
-  logger.error('Fatal error occurred in bot runtime', error);
+  console.error('[ERROR] Unhandled fatal error', error);
   process.exit(1);
 });
