@@ -17,7 +17,7 @@ async function createSticker(imageBuffer) {
       fit: 'inside',
       background: { r: 0, g: 0, b: 0, alpha: 0 }
     })
-    .webp({ quality: 100 })
+    .webp({ lossless: true, quality: 100 })
     .toBuffer();
 }
 
@@ -105,6 +105,7 @@ async function startBot() {
 
       for (const message of messages) {
         if (!message.message) {
+          logger.debug({ remoteJid: message.key.remoteJid }, 'Received empty message payload');
           continue;
         }
 
@@ -112,6 +113,7 @@ async function startBot() {
         const isVideo = Boolean(message.message.videoMessage);
 
         if (!isImage && !isVideo) {
+          logger.info({ remoteJid: message.key.remoteJid }, 'Non-media message received, ignoring');
           continue;
         }
 
