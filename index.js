@@ -1,3 +1,6 @@
+import { webcrypto } from 'node:crypto';
+globalThis.crypto = webcrypto;
+
 import * as baileys from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import sharp from 'sharp';
