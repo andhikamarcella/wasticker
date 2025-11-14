@@ -17,6 +17,23 @@ const logger = {
   debug: (...args) => console.debug('[DEBUG]', ...args)
 };
 
+function normalizeOwnerNumber(rawNumber) {
+  const digits = (rawNumber || '').replace(/\D/g, '');
+  if (!digits) {
+    return null;
+  }
+  return `${digits}@s.whatsapp.net`;
+}
+
+const ownerNumberRaw = process.env.OWNER_NUMBER;
+const ownerJid = normalizeOwnerNumber(ownerNumberRaw);
+
+if (!ownerJid) {
+  logger.warn('OWNER_NUMBER environment variable is missing or invalid. The bot will ignore all messages.');
+} else {
+  logger.info('Owner JID loaded', { ownerJid });
+}
+
 async function createStickerFromImage(imageBuffer) {
   logger.debug('Creating sticker from image buffer');
   return sharp(imageBuffer)
@@ -124,13 +141,21 @@ async function startBot() {
       }
 
       for (const message of messages) {
+        const remoteJid = message.key.remoteJid;
+        const senderJid = message.key.participant || remoteJid;
+
         if (!message.message) {
-          logger.debug('Skipping empty message payload', { remoteJid: message.key.remoteJid });
+          logger.debug('Skipping empty message payload', { remoteJid });
           continue;
         }
 
         if (message.key.fromMe) {
           logger.debug('Skipping message sent by the bot itself');
+          continue;
+        }
+
+        if (!ownerJid || senderJid !== ownerJid) {
+          logger.info('Ignoring message from non-owner', { senderJid, remoteJid });
           continue;
         }
 
