@@ -1,0 +1,4 @@
+node_modules/
+auth/
+.DS_Store
+npm-debug.log*
