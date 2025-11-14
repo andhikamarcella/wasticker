@@ -1,7 +1,6 @@
 import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
-  extractVideoFrameToJpg,
   fetchLatestBaileysVersion,
   useMultiFileAuthState
 } from '@whiskeysockets/baileys';
@@ -15,7 +14,8 @@ const logger = {
   debug: (...args) => console.debug('[DEBUG]', ...args)
 };
 
-async function createSticker(imageBuffer) {
+async function createStickerFromImage(imageBuffer) {
+  logger.debug('Creating sticker from image buffer');
   return sharp(imageBuffer)
     .resize(512, 512, {
       fit: 'inside',
@@ -25,46 +25,60 @@ async function createSticker(imageBuffer) {
     .toBuffer();
 }
 
-async function processMediaMessage(sock, message, mediaType) {
+async function handleImageMessage(sock, message) {
   try {
-    logger.info('Downloading media message', { remoteJid: message.key.remoteJid, mediaType });
+    const remoteJid = message.key.remoteJid;
+    logger.info('Downloading image message', { remoteJid });
+
     const mediaBuffer = await downloadMediaMessage(
       message,
       'buffer',
       {},
-      {
-        reuploadRequest: sock
-      }
+      { reuploadRequest: sock }
     );
 
-    let imageBuffer = mediaBuffer;
-
-    if (mediaType === 'video') {
-      logger.info('Extracting frame from video');
-      imageBuffer = await extractVideoFrameToJpg(mediaBuffer);
-    }
-
-    const stickerBuffer = await createSticker(imageBuffer);
+    const stickerBuffer = await createStickerFromImage(mediaBuffer);
 
     await sock.sendMessage(
-      message.key.remoteJid,
+      remoteJid,
       { sticker: stickerBuffer },
       { quoted: message }
     );
 
-    logger.info('Sticker sent successfully');
+    logger.info('Sticker sent successfully', { remoteJid });
   } catch (error) {
-    logger.error('Failed to process media message', error);
+    logger.error('Failed to process image message', error);
   }
+}
+
+async function handleVideoMessage(sock, message) {
+  const remoteJid = message.key.remoteJid;
+  logger.info('Video message received, informing user', { remoteJid });
+  try {
+    await sock.sendMessage(
+      remoteJid,
+      { text: 'Untuk sekarang aku cuma bisa bikin stiker dari foto ya 😊' },
+      { quoted: message }
+    );
+  } catch (error) {
+    logger.error('Failed to reply to video message', error);
+  }
+}
+
+function logNonMediaMessage(message) {
+  const remoteJid = message.key.remoteJid;
+  const messageTypes = Object.keys(message.message || {});
+  logger.info('Non-media message received', { remoteJid, messageTypes });
 }
 
 async function startBot() {
   try {
-    logger.info('Initializing WhatsApp Sticker Bot');
+    logger.info('Starting WhatsApp sticker bot');
 
     const { state, saveCreds } = await useMultiFileAuthState('auth');
     const { version, isLatest } = await fetchLatestBaileysVersion();
-    logger.info('WhatsApp Web version info', { version, isLatest });
+
+    logger.info('Using WhatsApp Web version', { version, isLatest });
 
     const sock = makeWASocket({
       version,
@@ -78,18 +92,19 @@ async function startBot() {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        logger.info('QR code received, scan with WhatsApp');
+        logger.info('QR code received, please scan with WhatsApp');
         qrcode.generate(qr, { small: true });
       }
 
       if (connection === 'open') {
-        logger.info('WhatsApp connection opened');
+        logger.info('Connection to WhatsApp opened');
       }
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        logger.warn('WhatsApp connection closed', { statusCode });
+
+        logger.warn('Connection to WhatsApp closed', { statusCode, shouldReconnect });
 
         if (shouldReconnect) {
           logger.info('Reconnecting to WhatsApp...');
@@ -107,29 +122,35 @@ async function startBot() {
 
       for (const message of messages) {
         if (!message.message) {
-          logger.debug('Received empty message payload', { remoteJid: message.key.remoteJid });
+          logger.debug('Skipping empty message payload', { remoteJid: message.key.remoteJid });
           continue;
         }
 
-        const isImage = Boolean(message.message.imageMessage);
-        const isVideo = Boolean(message.message.videoMessage);
-
-        if (!isImage && !isVideo) {
-          logger.info('Non-media message received, ignoring', { remoteJid: message.key.remoteJid });
+        if (message.key.fromMe) {
+          logger.debug('Skipping message sent by the bot itself');
           continue;
         }
 
-        const mediaType = isImage ? 'image' : 'video';
-        await processMediaMessage(sock, message, mediaType);
+        if (message.message.imageMessage) {
+          await handleImageMessage(sock, message);
+          continue;
+        }
+
+        if (message.message.videoMessage) {
+          await handleVideoMessage(sock, message);
+          continue;
+        }
+
+        logNonMediaMessage(message);
       }
     });
   } catch (error) {
-    logger.error('Failed to start bot', error);
+    logger.error('Error while starting the bot', error);
     setTimeout(startBot, 5000);
   }
 }
 
 startBot().catch((error) => {
-  logger.error('Fatal error in bot runtime', error);
+  logger.error('Fatal error occurred in bot runtime', error);
   process.exit(1);
 });
