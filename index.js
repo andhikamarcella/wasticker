@@ -8,19 +8,17 @@ import { fileURLToPath } from 'url';
 import pino from 'pino';
 import sharp from 'sharp';
 import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from 'ffmpeg-static';
+import ffmpegStatic from 'ffmpeg-static';
 import baileys, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  jidNormalizedUser,
-  downloadMediaMessage,
-  DisconnectReason
+  jidNormalizedUser
 } from '@whiskeysockets/baileys';
 
-const { default: makeWASocket } = baileys;
+const { default: makeWASocket, downloadMediaMessage, DisconnectReason } = baileys;
 
-if (ffmpegPath) {
-  ffmpeg.setFfmpegPath(ffmpegPath);
+if (ffmpegStatic) {
+  ffmpeg.setFfmpegPath(ffmpegStatic);
 }
 
 const logger = pino({ level: 'info' });
@@ -28,16 +26,23 @@ const logger = pino({ level: 'info' });
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const AUTH_FOLDER = join(__dirname, 'auth');
-const OWNER_NUMBER = '6285163207556';
+
+const rawOwner = process.env.OWNER_NUMBER || '6285163207556';
+const ownerDigits = rawOwner.replace(/\D/g, '');
+if (!ownerDigits) {
+  logger.error('OWNER_NUMBER must contain digits. Set OWNER_NUMBER env variable and restart.');
+  process.exit(1);
+}
+
+const OWNER_NUMBER = ownerDigits;
 const OWNER_JID = jidNormalizedUser(`${OWNER_NUMBER}@s.whatsapp.net`);
 const STICKER_COMMANDS = new Set(['!s', '!sticker']);
-const RECONNECT_DELAY_MS = 5000;
 
 async function removeAuthFolder() {
   if (fs.existsSync(AUTH_FOLDER)) {
     try {
       await fsPromises.rm(AUTH_FOLDER, { recursive: true, force: true });
-      logger.warn('Removed auth folder after logout. Please restart the bot to pair again.');
+      logger.warn('Removed auth folder due to invalid session.');
     } catch (error) {
       logger.error({ err: error }, 'Failed to remove auth folder');
     }
@@ -45,37 +50,7 @@ async function removeAuthFolder() {
 }
 
 function isStickerCommand(caption = '') {
-  const normalized = caption.trim().toLowerCase();
-  return STICKER_COMMANDS.has(normalized);
-}
-
-function isMessageFromOwner(message) {
-  if (!message) {
-    return false;
-  }
-
-  if (message.key.fromMe) {
-    return true;
-  }
-
-  const remoteJid = message.key.remoteJid;
-  const participant = message.key.participant;
-
-  if (!remoteJid) {
-    return false;
-  }
-
-  return jidNormalizedUser(participant || remoteJid) === OWNER_JID;
-}
-
-async function imageToSticker(buffer) {
-  return sharp(buffer)
-    .resize(512, 512, {
-      fit: 'inside',
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    })
-    .webp({ lossless: true })
-    .toBuffer();
+  return STICKER_COMMANDS.has(caption.trim().toLowerCase());
 }
 
 function unwrapMessageContent(message) {
@@ -94,21 +69,65 @@ function unwrapMessageContent(message) {
   return message.message;
 }
 
+function isFromOwner(message) {
+  if (!message) {
+    return false;
+  }
+
+  if (message.key.fromMe) {
+    return true;
+  }
+
+  const remoteJid = message.key.remoteJid;
+  const participant = message.key.participant;
+
+  if (!remoteJid) {
+    return false;
+  }
+
+  try {
+    const normalizedRemote = jidNormalizedUser(remoteJid);
+    if (normalizedRemote === OWNER_JID) {
+      return true;
+    }
+
+    if (participant) {
+      const normalizedParticipant = jidNormalizedUser(participant);
+      return normalizedParticipant === OWNER_JID;
+    }
+  } catch (error) {
+    logger.warn({ err: error }, 'Failed to normalize JID while checking owner');
+  }
+
+  return false;
+}
+
+async function imageToSticker(buffer) {
+  return sharp(buffer)
+    .resize(512, 512, {
+      fit: 'inside',
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    })
+    .webp({ lossless: true })
+    .toBuffer();
+}
+
 async function handleStickerCommand(sock, message) {
   const content = unwrapMessageContent(message);
+  const imageMessage = content?.imageMessage;
 
-  if (!content?.imageMessage) {
-    logger.info('Sticker command received without an image payload');
+  if (!imageMessage) {
+    logger.info('Sticker command received without image payload');
     return;
   }
 
   try {
-    logger.info({ remoteJid: message.key.remoteJid }, 'Downloading image for sticker conversion');
+    logger.info({ remoteJid: message.key.remoteJid }, 'Downloading image for sticker');
     const mediaBuffer = await downloadMediaMessage(
       message,
       'buffer',
       {},
-      { reuploadRequest: sock, logger }
+      { logger, reuploadRequest: sock }
     );
 
     const stickerBuffer = await imageToSticker(mediaBuffer);
@@ -124,7 +143,7 @@ async function handleStickerCommand(sock, message) {
     logger.error({ err: error }, 'Failed to create sticker');
     await sock.sendMessage(
       message.key.remoteJid,
-      { text: 'Maaf, aku gagal bikin stikernya. Coba lagi ya!' },
+      { text: 'Maaf, stikernya gagal dibuat. Coba lagi ya!' },
       { quoted: message }
     );
   }
@@ -132,18 +151,18 @@ async function handleStickerCommand(sock, message) {
 
 async function startBot() {
   try {
-    logger.info('Starting WhatsApp sticker bot');
+    logger.info('Starting WhatsApp bot');
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
-    logger.info({ version, isLatest }, 'Fetched WhatsApp Web version information');
+    logger.info({ version, isLatest }, 'Fetched WhatsApp Web version');
 
     const sock = makeWASocket({
       auth: state,
       version,
-      browser: ['RailwayBot', 'Chrome', '108.0.5359.98'],
       printQRInTerminal: false,
+      browser: ['RailwayBot', 'Chrome', '1.0.0'],
       logger
     });
 
@@ -154,7 +173,9 @@ async function startBot() {
         const code = await sock.requestPairingCode(OWNER_NUMBER);
         console.log(`[PAIRING] Enter this code on your WhatsApp: ${code}`);
       } catch (error) {
-        logger.error({ err: error }, 'Failed to generate pairing code');
+        console.error('[PAIRING] Failed to generate pairing code err:', JSON.stringify(error, null, 2));
+        await removeAuthFolder();
+        process.exit(1);
       }
     }
 
@@ -167,17 +188,19 @@ async function startBot() {
       }
 
       if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode ?? lastDisconnect?.error?.statusCode;
-        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+        const statusCode = lastDisconnect?.error?.output?.statusCode
+          ?? lastDisconnect?.error?.output?.payload?.statusCode
+          ?? lastDisconnect?.error?.statusCode;
+
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
 
         if (isLoggedOut) {
-          logger.error({ statusCode }, 'Logged out from WhatsApp');
+          console.error('[AUTH] Session invalid, please restart the bot to pair again.');
           await removeAuthFolder();
           return;
         }
 
-        logger.warn({ statusCode }, 'Connection closed, attempting to reconnect');
-        setTimeout(startBot, RECONNECT_DELAY_MS);
+        logger.warn({ statusCode }, 'Connection closed, waiting for Baileys to reconnect');
       }
     });
 
@@ -191,7 +214,7 @@ async function startBot() {
           continue;
         }
 
-        if (!isMessageFromOwner(message)) {
+        if (!isFromOwner(message)) {
           logger.info({ remoteJid: message.key.remoteJid }, 'Ignoring message from non-owner');
           continue;
         }
@@ -202,19 +225,18 @@ async function startBot() {
 
         if (imageMessage && isStickerCommand(caption)) {
           await handleStickerCommand(sock, message);
-        } else if (imageMessage) {
-          logger.info('Owner sent image without sticker command, ignoring');
-        } else {
-          logger.info({ messageTypes: Object.keys(content || {}) }, 'Received non-image message from owner');
         }
       }
     });
   } catch (error) {
     logger.error({ err: error }, 'Failed to start the bot');
-    setTimeout(startBot, RECONNECT_DELAY_MS);
+    await removeAuthFolder();
+    process.exit(1);
   }
 }
 
-startBot().catch((error) => {
+startBot().catch(async (error) => {
   logger.error({ err: error }, 'Unhandled error in bot runtime');
+  await removeAuthFolder();
+  process.exit(1);
 });
