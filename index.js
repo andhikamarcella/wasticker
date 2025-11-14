@@ -1,11 +1,14 @@
-import makeWASocket, {
-  DisconnectReason,
-  downloadMediaMessage,
-  fetchLatestBaileysVersion,
-  useMultiFileAuthState
-} from '@whiskeysockets/baileys';
+import * as baileys from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import sharp from 'sharp';
+
+const {
+  makeWASocket,
+  useMultiFileAuthState,
+  downloadMediaMessage,
+  fetchLatestBaileysVersion,
+  DisconnectReason
+} = baileys;
 
 const logger = {
   info: (...args) => console.log('[INFO]', ...args),
