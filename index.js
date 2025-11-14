@@ -5,11 +5,15 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState
 } from '@whiskeysockets/baileys';
-import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import sharp from 'sharp';
 
-const logger = pino({ level: 'info' });
+const logger = {
+  info: (...args) => console.log('[INFO]', ...args),
+  warn: (...args) => console.warn('[WARN]', ...args),
+  error: (...args) => console.error('[ERROR]', ...args),
+  debug: (...args) => console.debug('[DEBUG]', ...args)
+};
 
 async function createSticker(imageBuffer) {
   return sharp(imageBuffer)
@@ -17,19 +21,18 @@ async function createSticker(imageBuffer) {
       fit: 'inside',
       background: { r: 0, g: 0, b: 0, alpha: 0 }
     })
-    .webp({ lossless: true, quality: 100 })
+    .webp({ lossless: true })
     .toBuffer();
 }
 
 async function processMediaMessage(sock, message, mediaType) {
   try {
-    logger.info({ remoteJid: message.key.remoteJid, mediaType }, 'Downloading media message');
+    logger.info('Downloading media message', { remoteJid: message.key.remoteJid, mediaType });
     const mediaBuffer = await downloadMediaMessage(
       message,
       'buffer',
       {},
       {
-        logger,
         reuploadRequest: sock
       }
     );
@@ -51,7 +54,7 @@ async function processMediaMessage(sock, message, mediaType) {
 
     logger.info('Sticker sent successfully');
   } catch (error) {
-    logger.error({ err: error }, 'Failed to process media message');
+    logger.error('Failed to process media message', error);
   }
 }
 
@@ -61,12 +64,11 @@ async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState('auth');
     const { version, isLatest } = await fetchLatestBaileysVersion();
-    logger.info({ version, isLatest }, 'WhatsApp Web version info');
+    logger.info('WhatsApp Web version info', { version, isLatest });
 
     const sock = makeWASocket({
       version,
       auth: state,
-      logger,
       printQRInTerminal: false
     });
 
@@ -87,7 +89,7 @@ async function startBot() {
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        logger.warn({ statusCode }, 'WhatsApp connection closed');
+        logger.warn('WhatsApp connection closed', { statusCode });
 
         if (shouldReconnect) {
           logger.info('Reconnecting to WhatsApp...');
@@ -105,7 +107,7 @@ async function startBot() {
 
       for (const message of messages) {
         if (!message.message) {
-          logger.debug({ remoteJid: message.key.remoteJid }, 'Received empty message payload');
+          logger.debug('Received empty message payload', { remoteJid: message.key.remoteJid });
           continue;
         }
 
@@ -113,7 +115,7 @@ async function startBot() {
         const isVideo = Boolean(message.message.videoMessage);
 
         if (!isImage && !isVideo) {
-          logger.info({ remoteJid: message.key.remoteJid }, 'Non-media message received, ignoring');
+          logger.info('Non-media message received, ignoring', { remoteJid: message.key.remoteJid });
           continue;
         }
 
@@ -122,12 +124,12 @@ async function startBot() {
       }
     });
   } catch (error) {
-    logger.error({ err: error }, 'Failed to start bot');
+    logger.error('Failed to start bot', error);
     setTimeout(startBot, 5000);
   }
 }
 
 startBot().catch((error) => {
-  logger.error({ err: error }, 'Fatal error in bot runtime');
+  logger.error('Fatal error in bot runtime', error);
   process.exit(1);
 });
