@@ -1,0 +1,19 @@
+{
+  "name": "wasticker-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "6.17.16",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "pino": "^9.0.0",
+    "sharp": "0.32.6"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
